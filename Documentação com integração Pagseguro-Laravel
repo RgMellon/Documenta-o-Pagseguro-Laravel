@@ -1,0 +1,421 @@
+Criar um arquivo dentro do laravel em config no caso com o nome de pagseguro, lá tera as informações
+de configurações como URLS a serem usadas ao decorrer do projeto.
+
+Em env tbm terá três configuraçoes
+	PAGSEGURO_ENVIRONMENT=sandbox
+	PAGSEGURO_EMAIL = rgmelo94@gmail.com
+	PAGSEGURO_TOKEN = B13E15B4059948BB8788408B66C2B67E
+
+Esse token é o token de acesso gerado pelo pagseguro, que será ultil mais adiante.
+
+Processos de pagamento, primeira coisa ter a URL do pagseguro, onde disponibilizará por exemplo
+o Objeto PagSeguroDirectPayment
+
+**** O cara necessario para brincar com o pagseguro ****
+<script src="{{ config('pagseguro.url_api_checkout_transparent_sandbox') }}"></script>
+	utilizar antes da pagina, que é o link que obtem o objeto do Pagseguro
+	então antes de qualquer coisa, adicionar esse cara ao fim da pagina
+
+	o link "https://stc.sandbox.pagseguro.uol.com.br/pagseguro/api/v2/checkout/pagseguro.directpayment.js"
+	do co config 
+*********
+
+
+Obter uma sessao: 
+	para obter uma sessao deve se enviar uma requisição para o Backend, o pagseguro só 
+	aceita que a requisição seja feita server side,
+	logo usando fetch
+
+
+	let url = "{{route('pg.getcode')}}";
+      fetch(url, {
+        method: 'GET',
+      }).then(data => data.text())
+        .then(id => PagSeguroDirectPayment.setSessionId(id))
+        .catch(err => console.log(err))
+
+    pg.getcode é a url que está o controller, que logo será explicado.
+    	faz uma requisição para essa url,  do tipo GET
+    	que transformara em um dado, que é um ID esse id é pego no segundo then 
+    	e passa para o PagSeguroDirectPayment.setSessionId(id)
+    	que é assim que uma conexão é estabelecida
+
+   	*** Backend ***
+   	 como visto acima a rota chamada é pg.getCode
+   	 	Route::get('pagseguro-transparent', 'PagseguroController@getCode')->name('pg.getcode');
+   	**Detalhe importante essa rota, no laravel 5.5 > tem que ser definida no arquivo api
+   	senão um erro 419 será dado, pois é um arquivo de forma que está chamando um processo de dentro
+   		Definido isso o controller com o metodo getCode será chamado
+
+   	public function getCode(Pagseguro $pgs){
+        return $pgs->getSessionId();
+    }
+
+    instanciando um model, no parametro, que no caso é Pageseguro
+    e o usando o getSessionId desse metodo, 
+
+    dentro da Model::
+    	informações como o token e o id, aqueles definidos em config, 
+    	será passado para o como parametros parametros da requisição
+    	usando o http_build_query($params)
+    	que transformara em um estilo como esse email=blabla@blal&token=bdsaksdan
+    	pois esse é o formato de envio de parametro
+
+    	apos isso um requisicao sera efetuada,
+    	detalhe que é usado uma biblioteca chamada GUzzle
+    	nela é feita todas as requests para a api do pagseguro
+
+    	$g = new Guzzle();
+ 			$response = $g->request('POST', $url, [
+                'query' => $params,
+            ]);
+
+        a requisição é do tipo POST e a URL 
+        para a requisição fica em config('pagseguro.url_session_payment_sandbox')
+        que seria a https://ws.sandbox.pagseguro.uol.com.br/v2/sessions
+        e como mostrado acima, no Guzzle, o formato é query e os parametros serão enviados
+        que no caso consiste no email e token naquele formato
+        logo após essa requisição gerara uma resposta
+        e por algum motivo que não sei explicar o pagseguro ainda trabalha com xml
+        logo o processo é transformar para JSOn
+
+        $body  = simplexml_load_string($response->getBody()->getContents());
+
+        pegando seu conteudo
+
+         return $bodyJson->id;
+
+        e retornando o id da sessão que precisamos, logo o controller tbm retornara para quem o chamaou,
+        que no caso foi aquele fetch e abrira a sessao com o pagseguro
+
+        esse procedimento é necessario para qualquer tipo de pagamento que venha a ser feito com o pagseguro
+        antes de mais nada terá sempre que ser aberto uma sessao
+
+
+
+        Pagamento por boleto : 
+        	um dos jeitos é vincular o botao a um evento
+        	que será disparado ao click
+        	novamente o processo é feito no backend, logo uma rota será chamada
+        	na hora da requisição, uma outra coisa que precisa ser enviada é um senderHash
+        	que é pego no objeto PagSeguroDirectPayment.getSenderHash();
+
+        	o jeito usado para enviar esse sender hash foi o URLSearchParams();
+        	
+        	let paramsBusca = new URLSearchParams();
+    		paramsBusca.append('sendHash', sendHash);
+
+    		com isso ficaria &sendHash=hashdopagseguro
+    		que é o formato aceito na hora de enviar o hash
+
+    		indo para a requisição, novamente usando o fetch
+
+    		fetch(url, {
+        		method: "POST",
+        		body: paramsBusca,
+      		}).then(data => data.text())
+        	.then(url => window.location.href = url);
+
+        	a url, como dito antes é para uma rota do sistema, que
+        	seria o {{ route('pg.boleto')}} 
+        	o body é o hash, que aguarda um retorno, que será um link
+        	com esse link sera redirecionado para o pagamento com boleto
+
+
+        	Parte do backend boleto:
+
+        	 Rota: novamente terá que ser usada na parte api do pagseguro
+        	 pois é uma requisição externa para um acesso interno
+        	 logo Route::post('pagseguro-boleto', 'PagseguroController@boleto')->name('pg.boleto');
+
+        	 com isso o metodo boleto de PagseguroController será invocado
+
+        	**CONTROLLER**
+	        	public function boleto(Request $r, Pagseguro $pg){
+	     		   return $pg->pagamentoBoleto($r->sendHash);
+	    		}
+
+	    	como pode ser visto, novamente a model Pagseguro é instanciada
+	    		e chamando o metodo pagamentoBoleto, porém dessa vez
+	    		o hash, aquele enviado no front é pego aqui, pelo helper
+	    		do laravel usando Request, e passando esse hash para o pagamentoBoleto
+	    		que será usado na hora da requisição do boleto.
+
+	    	**MODEL**
+	    		public function pagamentoBoleto($sendHash){
+	    			$params = [
+			            'email' => config('pagseguro.email'),
+			            'token' => config('pagseguro.token'),
+			            'senderHash' => $sendHash,
+			            'paymentMode' => 'default',
+			            'paymentMethod' => 'boleto',
+			            'currency' => 'BRL',
+			            'itemId1' => '0001',
+			            'itemDescription1' => 'Produto PagSeguroI',
+			            'itemAmount1' => '99999.99',
+			            'itemQuantity1' => '1',
+			            'itemWeight1' => '1000',
+			            'itemId2' => '0002',
+			            'itemDescription2' => 'Produto PagSeguroII',
+			            'itemAmount2' => '99999.98',
+			            'itemQuantity2' => '2',
+			            'itemWeight2' => '750',
+			            'reference' => 'REF1234',
+			            'senderName' => 'Jose Comprador',
+			            'senderAreaCode' => '99',
+			            'senderPhone' => '99999999',
+			            'senderEmail' => 'c73904650353493991757@sandbox.pagseguro.com.br',
+			            'senderCPF' => '41366515897',
+			            'shippingType' => '1',
+			            'shippingAddressStreet' => 'Av. PagSeguro',
+			            'shippingAddressNumber' => '9999',
+			            'shippingAddressComplement' => '99o andar',
+			            'shippingAddressDistrict' => 'Jardim Internet',
+			            'shippingAddressPostalCode' => '99999999',
+			            'shippingAddressCity' => 'Cidade Exemplo',
+			            'shippingAddressState' => 'SP',
+			            'shippingAddressCountry' => 'ATA',
+        			];
+
+        		esse parametros, são testes usados, que foi pego na propria documentação do
+        		pagseguro, apenas para motivos de testes. obviamente que adiante
+        		será trocado por dados reais, no params é usado novamente o email e token
+        		aqueles de config e env, tbm é usado o SenderHash (terceira linha)
+        		atente-se ao cpf e o senderEmail, o CPF tem que ser valido
+        		e o senderEmail tem que ser um email de teste, que o proprio pagseguro fornece
+
+        		com os parametros em mãos, uma requisição sera feita novamente usando GUZZLE
+        		porém agora sera usado form_params ao inves de query
+
+        		$guzzle = new Guzzle();
+        			$response = $guzzle->request('POST', config('pagseguro.url_transparent_sandbox'), [
+            		'form_params' => $params
+       			 ]);
+
+       			 como pode ser visto é do tipo POST e a URL é para o arquivo de config
+       			 config('pagseguro.url_transparent_sandbox')
+       			 que seria : https://ws.sandbox.pagseguro.uol.com.br/v2/transactions
+
+       			 e novamente 
+
+       			 $body = $response->getBody();
+        		 $contents = $body->getContents();
+        		 $xml = simplexml_load_string($contents);
+        		 return $xml->paymentLink;
+
+        		 pega se a resposta, o corpo dela, o conteudo, transforma em json
+        		 e pega o link que será redirecionado lá no fetch, que foi a chamada feita
+
+        		 com isso a chamada para boleto estara concluida.
+
+
+    Pagseguro Cartão de credito :
+    	novamente, o padrão a ser seguido, disponibilizar a URL do pagseguro que é onde tem
+    	o objeto Pagseguro
+    	<script src="{{ config('pagseguro.url_api_checkout_transparent_sandbox') }}"></script>
+    	Fazer uma requisição para pegar uma sessao com o pagseguro, como vimos acima
+    	abrir essa sessao com o pagseguro
+
+
+
+    	agora vem a parte do cartão, os dados necessarios são
+    	cardNumber, cardExpiryMonth, cardExpiryYear, cardCVV,
+    	além do token, e o cardName, que seria por exemplo visa, master e etc
+
+    	para isso um formulario é criado, com os dois ultimos campos escondidos,
+    	isso foi uma opção, poderia ser feito por outro jeito
+
+    	******Obter Bandeira
+    		para obter a bandeira, que será preenchida no campo invisivel cardName
+    		usando o PagSeguroDirectPayment.getBrand
+    		no seu corpo ele recebe o valor do campo equivalente ao cartão
+    		cardBin: ....
+    		com dois metodos, succes e error
+    		no success o nome do cartao, da bandeira do cartao é pego
+    		e preenchido no campo inivisivel.
+    		após uma chamada para getCardToken é realizada, responsavel por pegar
+    		o token do cartão e preencher no campo invisivel.
+
+    		let card = document.querySelector('#valorCartao').value.replace(/ /g, '');
+        	
+        	PagSeguroDirectPayment.getBrand({
+	          	cardBin: card,
+	          	
+	          	success: function(response) {
+	            	document.querySelector("#marcaCartao").value = response.brand.name;
+	            	getCardToken();
+	          	},
+	          	error: function(response) {
+	            
+	          	},
+
+        	});
+
+    	*****Obter o token
+    	para isso se usa o 
+    		PagSeguroDirectPayment.createCardToken
+    		antes de usar, fiz uma forma para tornar os dados 
+    		em objeto, então ao clicar
+    		o formulario é pego 
+    		let form = document.querySelector("#pagamento-cartao");
+    		com isso : 
+    		
+    		let cartao = {
+            	numero : form.cardNumber.value,
+            	mesExpiracao : form.cardExpiryMonth.value,
+            	anoExpiracao : form.cardExpiryYear.value,
+            	cvv : form.cardCVV.value,
+         	}
+
+         	assim ao usar o PagseguroDirectPayment.createCardToken({
+         		cardNumber: cartao.numero,
+            	cvv: cartao.cvv,
+            	expirationMonth: cartao.mesExpiracao,
+            	expirationYear: cartao.anoExpiracao,
+            	
+            	success: function(response) {
+              		document.querySelector("#token").value = response.card.token;
+              		createTransactionCard();
+            	},
+            	
+            	error: function(response) {
+              		//tratamento do erro
+            	},
+         	})
+
+         	como pode ser visto, createdCardToken 
+         		pega os dados do cartao
+         		e tem dois metodos, succes, e error
+         		no success, o campo  token, que está escondido, será preenchido
+         		com o nome do cartão.
+         		e logo abaixo será chamada um outro metodo createTransactionCard()
+
+
+         	agora vêm a parte da requisição em si, com os dados necessarios para enviar uma request
+         	incluindo o token e a bandeira, recuperados nas duas funções acima.
+
+         	function createTransactionCard(){
+          		let form = document.querySelector("#pagamento-cartao");
+          		let data = new FormData(form);
+          		data.append('senderHash', PagSeguroDirectPayment.getSenderHash());
+		         
+		        let url = "{{route('pg.cartao.request')}}";
+		        
+		        fetch(url, {
+		            method: "POST",
+		            body: data,
+		        }).then(res => res.text())
+		            .then(res => console.log(res))
+		        }
+
+		    primeiro o formulario é pego, pois ele contem os dados que queremos
+		    logo o new FormData(form) transforma esses dados em formato aceito para envio
+		    incluindo no append o senderHash
+
+		    com isso novamente mandamos uma requisição para dentro do laravel, que 
+		    como vimos, pelo fato de ser uma request do front logo
+		    essa rota terá que ser definida no arquivo api do laravel.
+		    Route::post('pagseguro-cartao', 'PagseguroController@cartaoRequest')->name('pg.cartao.request');
+
+		    logo o metodo cartaoRequest do controller PagseguroController é chamado
+
+		   	***CONTROLLER ***
+
+		   	public function cartaoRequest(Request $r, Pagseguro $pg){
+        		return $pg->pagamentoCartao($r);
+   			 }
+
+   			 aqui, todas as requisições feitas pelo fetch serão pegas e mandadas como argumento no
+   			 pagamentoCartao()
+   			 logo todos os dados referentes ao cartao é obtido na model cujo o metodo é
+   			 pagamentoCartao
+
+
+	*** Model ***
+		public function pagamentoCartao($request) {
+			$params = [
+            'email' => config('pagseguro.email'),
+            'token' => config('pagseguro.token'),
+            'senderHash' => $request->senderHash,
+            'paymentMode' => 'default',
+            'paymentMethod' => 'creditCard',
+            'currency' => 'BRL',
+            
+            'itemId1' => '0001',
+            'itemDescription1' => 'Produto PagSeguroI',
+            'itemAmount1' => '200.00',
+            'itemQuantity1' => '1',
+            'itemWeight1' => '1000',
+            
+            'reference' => 'REF1234',
+            'senderName' => 'Jose Comprador',
+            'senderAreaCode' => '99',
+            'senderPhone' => '99999999',
+            'senderEmail' => 'c73904650353493991757@sandbox.pagseguro.com.br',
+            'senderCPF' => '41366515897',
+
+            'shippingType' => '1',
+            'shippingAddressStreet' => 'Av. PagSeguro',
+            'shippingAddressNumber' => '9999',
+            'shippingAddressComplement' => '99o andar',
+            'shippingAddressDistrict' => 'Jardim Internet',
+            'shippingAddressPostalCode' => '99999999',
+            'shippingAddressCity' => 'Cidade Exemplo',
+            'shippingAddressState' => 'SP',
+            'shippingAddressCountry' => 'ATA',
+            'creditCardToken'=>$request->cardToken,
+            'installmentQuantity'=> '1',
+            'installmentValue'=> '200.00',
+            'noInterestInstallmentQuantity'=> '2',
+            'creditCardHolderName'=>'Jose Comprador',
+            'creditCardHolderCPF'=>'11475714734',
+            'creditCardHolderBirthDate'=>'01/01/1900',
+            'creditCardHolderAreaCode'=>99,
+            'creditCardHolderPhone'=>99999999,
+            'billingAddressStreet'=>'Av. PagSeguro',
+            'billingAddressNumber'=>9999,
+            'billingAddressComplement'=>'99o andar',
+            'billingAddressDistrict'=>'Jardim Internet',
+            'billingAddressPostalCode'=>99999999,
+            'billingAddressCity'=>'Cidade Exemplo',
+            'billingAddressState'=>'SP',
+            'billingAddressCountry'=>'ATA',
+        ];
+
+        lembrando novamente que o token e email são sempre usados para requisicoes
+        agr os dados vindo como parametros incluindo sendHash é usado e
+        o token do cartão tbm, aquele gerado no front-end
+        creditCardToken'=>$request->cardToken
+
+        ** algumas curiosidades, a documentação do pagseguro disponibiliza informações
+        erradas logo, se for tentar fazer essa requisição atraves dela dará erro, por conta dos parametros
+        um dos motivos é que 'installmentValue'=> '200.00',
+        'itemAmount1' => '200.00', // aqui representa o valor do produto 1
+        logo se fosse dois produtos com valor de 200.00 o Value teria que ser 400
+        e o formato que o pgseguro aceita é com duas casas depois da virgula, que no caso 
+        é usado o ponto para separação
+        tem que ser a soma das compras dos produtos, senão não funcionara
+
+        com isso novamente usaremos o Guzzle para cuidar da request para o pagseguro
+
+       	$guzzle = new Guzzle();
+        $response = $guzzle->request('POST', config('pagseguro.url_transparent_sandbox'), [
+            'form_params' => $params
+        ]);
+
+        a url passada é a mesma que foi passada para o boleto
+        	e o form_params é usado novamente, passando os parametos
+
+        com isso uma resposta é gerada 
+        pegando o corpo, conteudo, transformando em json 
+        e pegando o code que é equivalente ao codigo de compra
+        com isso estara terminado
+
+        $body = $response->getBody();
+        $contents = $body->getContents();
+        $xml = simplexml_load_string($contents);
+        return $xml->code;
+
+
+
+
